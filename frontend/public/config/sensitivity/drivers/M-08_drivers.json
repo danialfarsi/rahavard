@@ -1,0 +1,51 @@
+{
+  "method_id": "M-08",
+  "method_name": "CTM (Comparable Transactions Method)",
+  "version": "2.4",
+  "drivers": [
+    {
+      "id": "transaction_multiple",
+      "name": "Transaction Multiple",
+      "name_fa": "ضریب معامله",
+      "base": 2.5,
+      "low": 2.0,
+      "high": 3.5,
+      "step": 0.1,
+      "unit": "multiple",
+      "decimal_places": 1,
+      "is_editable": true,
+      "enabled": true
+    },
+    {
+      "id": "control_premium",
+      "name": "Control Premium",
+      "name_fa": "صرف کنترل",
+      "base": 0.10,
+      "low": 0.05,
+      "high": 0.20,
+      "step": 0.02,
+      "unit": "percent",
+      "decimal_places": 2,
+      "is_editable": true,
+      "enabled": true
+    },
+    {
+      "id": "marketability_discount",
+      "name": "Marketability Discount",
+      "name_fa": "تخفیف بازارپذیری",
+      "base": 0.20,
+      "low": 0.15,
+      "high": 0.30,
+      "step": 0.02,
+      "unit": "percent",
+      "decimal_places": 2,
+      "is_editable": true,
+      "enabled": true
+    }
+  ],
+  "analysis_config": {
+    "default_steps": 10,
+    "min_steps": 5,
+    "max_steps": 20
+  }
+}

@@ -1,0 +1,160 @@
+@import "tailwindcss";
+
+@theme {
+  /* ============ پالت رنگ جدید ============ */
+  --color-dark-green: #015345;
+  --color-aqua-green: #8ECFAF;
+  --color-golden-amber: #D4A547;
+  --color-medium-green: #3B7A6E;
+  --color-gray-custom: #F5F5F5;
+  --color-white: #FFFFFF;
+  
+  /* ============ رنگ‌های سیستم ============ */
+  --color-background: #FFFFFF;
+  --color-foreground: #0A0A0A;
+  --color-primary: #015345;
+  --color-primary-foreground: #FFFFFF;
+  --color-secondary: #8ECFAF;
+  --color-secondary-foreground: #015345;
+  --color-muted: #F5F5F5;
+  --color-muted-foreground: #737373;
+  --color-accent: #D4A547;
+  --color-accent-foreground: #015345;
+  --color-destructive: #EF4444;
+  --color-destructive-foreground: #FFFFFF;
+  --color-border: #E5E5E5;
+  --color-input: #E5E5E5;
+  --color-ring: #015345;
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+/* ============ کلاس‌های کمکی رنگ ============ */
+.bg-dark-green {
+  background-color: #015345;
+}
+.bg-aqua-green {
+  background-color: #8ECFAF;
+}
+.bg-medium-green {
+  background-color: #3B7A6E;
+}
+.bg-golden-amber {
+  background-color: #D4A547;
+}
+.bg-gray-custom {
+  background-color: #F5F5F5;
+}
+
+.text-dark-green {
+  color: #015345;
+}
+.text-aqua-green {
+  color: #8ECFAF;
+}
+.text-medium-green {
+  color: #3B7A6E;
+}
+.text-golden-amber {
+  color: #D4A547;
+}
+
+.border-dark-green {
+  border-color: #015345;
+}
+.border-aqua-green {
+  border-color: #8ECFAF;
+}
+.border-golden-amber {
+  border-color: #D4A547;
+}
+
+.hover\:bg-dark-green:hover {
+  background-color: #015345;
+}
+.hover\:bg-aqua-green:hover {
+  background-color: #8ECFAF;
+}
+.hover\:bg-golden-amber:hover {
+  background-color: #D4A547;
+}
+
+/* ============ انیمیشن‌ها ============ */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes zoomIn95 {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-in-out;
+}
+
+.animate-zoom-in-95 {
+  animation: zoomIn95 0.2s ease-out;
+}
+
+/* ============================================
+   فونت وزیر برای تمام اعداد
+   ============================================ */
+@layer base {
+  input,
+  button,
+  span,
+  p,
+  h1, h2, h3, h4, h5, h6,
+  label,
+  td,
+  th,
+  div {
+    font-family: var(--font-vazir), sans-serif;
+  }
+  
+  /* اعداد در input ها */
+  input[type="number"],
+  input[type="text"],
+  input[type="tel"] {
+    font-family: var(--font-vazir), sans-serif !important;
+  }
+  
+  /* اعداد در جداول */
+  table,
+  td,
+  th {
+    font-family: var(--font-vazir), sans-serif !important;
+  }
+}
+
+
+/* ═══════════════════════════════════════════════════════════ */
+/* ✨ AnimatedButton — چرخش conic-gradient دور دکمه */
+/* ═══════════════════════════════════════════════════════════ */
+
+.animate-spin-slow {
+  animation: spin-slow var(--glow-duration, 3s) linear infinite;
+}
+
+
+/* ═══════════════════════════════════════════════════════════ */
+
+/* دکمه با انیمیت */
+
+/* محتوا روی gradient */
+
+/* وقتی disabled یا غیرفعال، انیمیشن نایست */
+
+/* اگه خواستی فقط روی hover انیمیت بشه: */
