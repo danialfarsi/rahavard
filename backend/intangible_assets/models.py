@@ -1,0 +1,498 @@
+from django.db import models
+from django.conf import settings
+from django.core.validators import MinValueValidator, MaxValueValidator
+
+# ==================== مدل‌های مرحله ۲: کشف و شناسایی ====================
+
+class DiscoveryForm(models.Model):
+    asset_name = models.CharField(max_length=255)
+    asset_code = models.CharField(max_length=50, unique=True)
+    asset_type = models.CharField(max_length=20)
+    description = models.TextField()
+    discovered_by = models.CharField(max_length=255)
+    department = models.CharField(max_length=255)
+    potential_value = models.TextField()
+    attachment = models.FileField(upload_to='discovery/', null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class ExpertInterview(models.Model):
+    discovery_form = models.ForeignKey(DiscoveryForm, on_delete=models.CASCADE, related_name='interviews')
+    expert_name = models.CharField(max_length=255)
+    expert_position = models.CharField(max_length=255)
+    interview_date = models.DateField()
+    tacit_knowledge = models.TextField()
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+
+class TacitKnowledgeForm(models.Model):
+    discovery_form = models.ForeignKey(DiscoveryForm, on_delete=models.CASCADE, related_name='tacit_knowledge')
+    knowledge_title = models.CharField(max_length=255)
+    knowledge_description = models.TextField()
+    source_person = models.CharField(max_length=255)
+    department = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class AssetListForm(models.Model):
+    discovery_form = models.ForeignKey(DiscoveryForm, on_delete=models.CASCADE, related_name='asset_lists')
+    list_date = models.DateField(auto_now_add=True)
+    total_count = models.IntegerField()
+    notes = models.TextField(blank=True)
+
+
+class ClassificationForm(models.Model):
+    CATEGORY_CHOICES = [
+        ('technological', 'فناورانه'),
+        ('knowledge', 'دانشی'),
+        ('relational', 'ارتباطی'),
+        ('human', 'انسانی'),
+        ('structural', 'ساختاری'),
+    ]
+    discovery_form = models.ForeignKey(DiscoveryForm, on_delete=models.CASCADE, related_name='classifications')
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES)
+    sub_category = models.CharField(max_length=100, blank=True)
+    classification_date = models.DateField(auto_now_add=True)
+
+
+class HiddenAssetChecklist(models.Model):
+    discovery_form = models.ForeignKey(DiscoveryForm, on_delete=models.CASCADE, related_name='hidden_checklists')
+    is_documented = models.BooleanField(default=False)
+    is_in_use = models.BooleanField(default=False)
+    has_expert = models.BooleanField(default=False)
+    has_market_value = models.BooleanField(default=False)
+    notes = models.TextField(blank=True)
+
+
+class PreliminaryEvaluation(models.Model):
+    discovery_form = models.ForeignKey(DiscoveryForm, on_delete=models.CASCADE, related_name='evaluations')
+    estimated_value = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+    confidence_level = models.IntegerField(default=50, validators=[MinValueValidator(0), MaxValueValidator(100)])
+    evaluator = models.CharField(max_length=255)
+    evaluation_date = models.DateField(auto_now_add=True)
+
+
+class IdentityAssessment(models.Model):
+    STATUS_CHOICES = [
+        ('verified', 'تأیید شده'),
+        ('pending', 'در انتظار'),
+        ('rejected', 'رد شده'),
+    ]
+    asset_name = models.CharField(max_length=255)
+    asset_type = models.CharField(max_length=100, blank=True)
+    description = models.TextField(blank=True)
+    q1 = models.IntegerField(default=3)
+    q2 = models.IntegerField(default=3)
+    q3 = models.IntegerField(default=3)
+    q4 = models.IntegerField(default=3)
+    q5 = models.IntegerField(default=3)
+    q6 = models.IntegerField(default=3)
+    q7 = models.IntegerField(default=3)
+    q8 = models.IntegerField(default=3)
+    q9 = models.IntegerField(default=3)
+    q10 = models.IntegerField(default=3)
+    q11 = models.IntegerField(default=3)
+    q12 = models.IntegerField(default=3)
+    q13 = models.IntegerField(default=3)
+    q14 = models.IntegerField(default=3)
+    q15 = models.IntegerField(default=3)
+    q16 = models.IntegerField(default=3)
+    q17 = models.IntegerField(default=3)
+    q18 = models.IntegerField(default=3)
+    q19 = models.IntegerField(default=3)
+    q20 = models.IntegerField(default=3)
+    total_score = models.FloatField(default=0)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    def calculate_score(self):
+        questions = [self.q1, self.q2, self.q3, self.q4, self.q5,
+                     self.q6, self.q7, self.q8, self.q9, self.q10,
+                     self.q11, self.q12, self.q13, self.q14, self.q15,
+                     self.q16, self.q17, self.q18, self.q19, self.q20]
+        total = sum(questions)
+        self.total_score = (total / 100) * 100
+        return self.total_score
+    
+    def determine_status(self):
+        if self.total_score >= 80:
+            return 'verified'
+        elif self.total_score >= 60:
+            return 'pending'
+        else:
+            return 'rejected'
+    
+    def save(self, *args, **kwargs):
+        self.calculate_score()
+        self.status = self.determine_status()
+        super().save(*args, **kwargs)
+    
+    class Meta:
+        ordering = ['-created_at']
+
+
+# ==================== مدل‌های غربالگری ====================
+
+class OrganizationType(models.Model):
+    TYPE_CHOICES = [
+        ('manufacturing', 'تولیدی'),
+        ('service', 'خدماتی'),
+        ('rto', 'RTO'),
+        ('holding', 'هلدینگ'),
+    ]
+    name = models.CharField(max_length=50, choices=TYPE_CHOICES, unique=True)
+    display_name = models.CharField(max_length=100)
+    
+    def __str__(self):
+        return self.display_name
+
+
+class ScreeningTemplate(models.Model):
+    CATEGORY_CHOICES = [
+        ('strategic_economic', 'استراتژیک - اقتصادی'),
+        ('strategic_social', 'استراتژیک - اجتماعی'),
+        ('strategic_knowledge', 'استراتژیک - دانشی'),
+        ('strategic_cultural', 'استراتژیک - فرهنگی'),
+        ('strategic_environmental', 'استراتژیک - زیست‌محیطی'),
+        ('operational_economic', 'عملیاتی - اقتصادی'),
+        ('operational_social', 'عملیاتی - اجتماعی'),
+        ('operational_knowledge', 'عملیاتی - دانشی'),
+        ('operational_cultural', 'عملیاتی - فرهنگی'),
+        ('operational_environmental', 'عملیاتی - زیست‌محیطی'),
+        ('support_economic', 'پشتیبان -اقتصادی'),
+        ('support_social', 'پشتیبان - اجتماعی'),
+        ('support_knowledge', 'پشتیبان - دانشی'),
+        ('support_cultural', 'پشتیبان - فرهنگی'),
+        ('support_environmental', 'پشتیبان - زیست‌محیطی'),
+    ]
+    RESULT_CHOICES = [
+        ('confirmed', 'دارایی قطعی'),
+        ('conditional', 'مشروط'),
+        ('rejected', 'رد شده'),
+    ]
+    
+    PROTECTION_ARCHETYPE_CHOICES = [
+        ('PA-1', 'مالکیت فکری ثبتی'),
+        ('PA-2', 'قراردادی'),
+        ('PA-3', 'راز تجاری'),
+        ('PA-4', 'دیجیتال/داده'),
+        ('PA-5', 'رویه‌ای/فرهنگی'),
+        ('N/A', 'قابل حفاظت نیست'),
+    ]
+    
+    organization_type = models.ForeignKey(OrganizationType, on_delete=models.CASCADE, related_name='templates')
+    organization_sub_type = models.CharField(
+        max_length=50,
+        null=True,
+        blank=True,
+        help_text='فقط برای org_type=rto: اگر university بود، فقط برای دانشگاه‌ها نمایش داده می‌شود'
+    )
+    item_name = models.CharField(max_length=255)
+    category = models.CharField(max_length=50, choices=CATEGORY_CHOICES)
+    default_result = models.CharField(max_length=20, choices=RESULT_CHOICES, default='confirmed')
+    is_active = models.BooleanField(default=True)
+    order = models.IntegerField(default=0)
+    description = models.TextField(blank=True)
+    condition_1_non_physical = models.BooleanField(default=True)
+    condition_2_identifiable = models.BooleanField(default=True)
+    condition_3_controllable = models.BooleanField(default=True)
+    condition_4_value_creating = models.BooleanField(default=True)
+    
+    asset_type = models.ForeignKey(
+        'AssetType',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='screening_templates'
+    )
+    
+    valuation_method = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        choices=[
+            ('M-01', 'M-01 - Relief from Royalty'),
+            ('M-02', 'M-02 - Discounted Cash Flow'),
+            ('M-03', 'M-03 - Replacement Cost Method'),
+            ('M-04', 'M-04 - Weighted Weighted Method'),
+            ('M-05', 'M-05 - Multi-Period Excess Earnings'),
+            ('M-06', 'M-06 - Replacement Cost Method (Adjusted)'),
+            ('M-07', 'M-07 - Total Weighted Cost'),
+            ('M-08', 'M-08 - Cost to Market'),
+            ('M-09', 'M-09 - Market Multiple Method'),
+        ],
+        help_text='روش اصلی ارزش‌گذاری برای این دارایی'
+    )
+    
+    protection_archetype = models.CharField(
+        max_length=5,
+        choices=PROTECTION_ARCHETYPE_CHOICES,
+        null=True,
+        blank=True,
+        verbose_name='آرکی‌تایپ حفاظتی',
+        help_text='نوع استراتژی حفاظتی مناسب برای این دارایی بر اساس موتور ۳'
+    )
+    
+    def __str__(self):
+        return f"{self.organization_type.display_name} - {self.item_name}"
+
+
+# ==================== مدل اصلی ScreenedAsset ====================
+class ScreenedAsset(models.Model):
+    RESULT_CHOICES = [
+        ('confirmed', 'دارایی قطعی'),
+        ('conditional', 'مشروط'),
+        ('rejected', 'رد شده'),
+    ]
+    
+    VALUATION_TYPE_CHOICES = [
+        ('DCF', 'DCF - Discounted Cash Flow (جریان نقدی تنزیل شده)'),
+        ('NAV', 'NAV - Net Asset Value (ارزش خالص دارایی)'),
+    ]
+    
+    asset_name = models.CharField(max_length=500, default='دارایی بدون نام')
+    asset_uid = models.CharField(max_length=50, unique=True, null=True, blank=True)
+    category = models.CharField(max_length=50, default='unknown')
+    result = models.CharField(max_length=20, choices=RESULT_CHOICES, default='confirmed')
+    discovery_date = models.DateField(null=True, blank=True)
+    version = models.CharField(max_length=20, default='1.0.0')
+    description = models.TextField(blank=True)
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+    
+    # 🎯 جدید: سازمان و واحد
+    organization = models.ForeignKey(
+        'accounts.Organization',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='screened_assets',
+        verbose_name="سازمان"
+    )
+    department = models.ForeignKey(
+        'accounts.Department',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='screened_assets',
+        verbose_name="واحد"
+    )
+    
+    asset_type = models.ForeignKey(
+        'AssetType',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='screened_assets'
+    )
+    
+    valuation_method = models.CharField(
+        max_length=10,
+        blank=True,
+        null=True,
+        help_text='روش ارزش‌گذاری انتخاب شده برای این دارایی'
+    )
+    
+    # ⬇️⬇️⬇️ فیلد جدید اضافه شده ⬇️⬇️⬇️
+    valuation_type = models.CharField(
+        max_length=10,
+        choices=VALUATION_TYPE_CHOICES,
+        null=True,
+        blank=True,
+        verbose_name='نوع ارزش‌گذاری',
+        help_text='نوع ارزش‌گذاری انتخاب شده توسط کاربر (DCF یا NAV)'
+    )
+    # ⬆️⬆️⬆️ پایان فیلد جدید ⬆️⬆️⬆️
+    
+    # فیلدهای جدید برای کاربران خارجی
+    source_type = models.CharField(
+        max_length=20,
+        choices=[('internal', 'داخلی'), ('external', 'خارجی')],
+        default='internal',
+        verbose_name='نوع منبع'
+    )
+    external_user_id = models.UUIDField(null=True, blank=True, verbose_name='شناسه کاربر خارجی')
+    session_id = models.CharField(max_length=500, null=True, blank=True, verbose_name='شناسه جلسه')
+    source_app = models.CharField(max_length=500, null=True, blank=True, verbose_name='اپلیکیشن مبدا')
+    
+    # ==================== فیلدهای تایید برای ارزش‌گذاری ====================
+    is_approved_for_valuation = models.BooleanField(
+        default=False,
+        verbose_name='تایید شده برای ارزش‌گذاری'
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_assets',
+        verbose_name='تاییدکننده'
+    )
+    approved_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='تاریخ تایید'
+    )
+    
+    # ==================== فیلدهای تایید برای حفاظت ====================
+    is_approved_for_protection = models.BooleanField(
+        default=False,
+        verbose_name='تایید شده برای حفاظت'
+    )
+    protection_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_protection_assets',
+        verbose_name='تاییدکننده حفاظت'
+    )
+    protection_approved_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='تاریخ تایید حفاظت'
+    )
+    
+    def __str__(self):
+        return f"{self.asset_uid or 'بدون کد'} - {self.asset_name}"
+
+
+# ==================== مدل فایل‌های پیوست ====================
+
+class AssetFile(models.Model):
+    FILE_TYPES = [
+        ('interview', 'مصاحبه'),
+        ('document', 'سند'),
+        ('process', 'فرآیند'),
+        ('database', 'پایگاه داده'),
+        ('rd_project', 'پروژه R&D'),
+    ]
+    
+    asset = models.ForeignKey(ScreenedAsset, on_delete=models.CASCADE, related_name='files')
+    file_type = models.CharField(max_length=20, choices=FILE_TYPES)
+    title = models.CharField(max_length=255)
+    file = models.FileField(upload_to='asset_files/%Y/%m/%d/')
+    description = models.TextField(blank=True)
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    def __str__(self):
+        return f"{self.get_file_type_display()} - {self.title}"
+    
+    class Meta:
+        ordering = ['-uploaded_at']
+
+
+# ============ مدل‌های مرحله ۳: ارزیابی ============
+from .valuation_models import (
+    AssetType, ValuationDimension, ValuationQuestion,
+    ValuationScoreGuide, AssetValuation, ValuationAnswer,
+    ValuationWeight
+)
+
+# ============ مدل نوتیفیکیشن ============
+from .notification_models import Notification
+
+# ============ مدل‌های STEP 3 ============
+from .valuation_step3_models import ValuationStep3, ValuationStep3Evidence
+
+# ============ مدل‌های ارزش‌گذاری ============
+from .valuation_models import (
+    ValuationCase, ValuationAssumption, ValuationEvidenceTag,
+    ValuationCategory, LifecycleStage, CurrencyType,
+    InflationBasis, SourceReliability, OverlapRiskLevel,
+    OverlapType, ReviewStatus, AssumptionTag, EvidenceTag
+)
+
+# ============ مدل‌های STEP 4 ============
+from .valuation_step4_models import ValuationStep4
+
+# ============ مدل‌های گراف دانش ============
+from .graph import (
+    AssetOntology,
+    EconomicDimension,
+    EcosystemDimension,
+    EvolutionaryDimension,
+    LegalDimension,
+    OrganizationalDimension,
+    RiskOpportunityDimension,
+    SecurityDimension,
+    StrategicDimension
+)
+
+# ============ مدل‌های کشف ============
+from .discovery_models import DiscoveryAssessment
+
+# اضافه کردن فیلد discovery_scores به مدل ScreeningTemplate
+# این فیلد برای ذخیره نمرات موتور شناسایی استفاده می‌شود
+ScreeningTemplate.add_to_class('discovery_scores', models.JSONField(blank=True, null=True, verbose_name='نمرات موتور شناسایی'))
+
+# ============ مدل‌های مدیریت API ============
+from .api_management_models import APIKey, ExternalUser, APIRequestLog
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Engine 05: توسعه و نوآوری (Asset Development & Innovation)
+# ═══════════════════════════════════════════════════════════
+from .engine_05.models import (
+    DevelopmentOpportunity,
+    InnovationIdea,
+)
+
+# 🆕 مدل‌های بلوغ IAMS
+from .engine_05.maturity_models import (
+    MaturityComponent,
+    MaturityQuestion,
+    MaturityWeightProfile,
+    MaturityAssessment,
+    MaturityResponse,
+)
+
+
+# ============================================================
+# موتور ۶ — تجاری‌سازی (Engine 06)
+# ============================================================
+from intangible_assets.engine_06.models import (  # noqa: E402, F401
+    Partner,
+    CommercializationCase,
+    ReadinessAssessment,
+    BusinessModelSelection,
+    PartnerShortlist,
+    CommercializationContract,
+    PaymentSchedule,
+    RevenueRecord,
+    CommercializationActivityLog,
+)
+
+
+# ============================================================
+# موتور ۶ — گام ۱ (Readiness Models V2)
+# ============================================================
+from intangible_assets.engine_06.readiness_models import (  # noqa: E402, F401
+    AssetFamily,
+    AssetFamilyMap,
+    ReadinessDimension,
+    ReadinessCriterion,
+    LikertScale,
+    EvidenceFactor,
+    DimensionWeight,
+    PartWeight,
+    ReadinessThreshold,
+    RecommendationRule,
+    RoutingRule,
+    ReadinessCriterionResponse,
+    CriterionEvidence,
+    ReadinessAssessmentV2,
+    CommitteeDecision,
+)
+
+
+# ============================================================
+# RTO Student Info (فرم پابلیک)
+# ============================================================
+from intangible_assets.rto_models import RTOStudentInfo  # noqa: E402, F401

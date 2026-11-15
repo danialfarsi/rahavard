@@ -1,0 +1,383 @@
+
+from django.urls import path, include
+from .external_discovery_views import ExternalDiscoveryView
+from .views_claim_assets import ClaimExternalAssetsView
+from rest_framework.routers import DefaultRouter
+from . import views
+from . import valuation_views
+from .views_screening import (
+    OrganizationTypeViewSet, 
+    ScreeningTemplateViewSet, 
+    ScreenedAssetViewSet,
+    AssetFileViewSet
+)
+from .views_asset_type_detection import DetectAssetTypeView
+from .valuation_case_views import ValuationCaseViewSet
+from .valuation_step3_views import ValuationStep3ViewSet
+from .valuation_step4_views import ValuationStep4ViewSet
+from .notification_views import NotificationViewSet
+from .discovery_views import DiscoveryAssessmentViewSet, DiscoveryAssetViewSet
+from .views_discovery import SuggestTemplateView
+from .valuation_sensitivity_views import SensitivityAnalysisViewSet
+from .valuation_qc_views import QualityControlViewSet
+from .graph_views import GraphViewSet
+from .views_api_stats import APIStatsView
+from .views_external_users import ExternalUsersView
+
+# ⬇️⬇️⬇️ جدید: Dashboard Portfolio ⬇️⬇️⬇️
+from .views_dashboard import DashboardPortfolioView
+
+# STEP 4 - Protection
+from .protection_views import ProtectionViewSet
+from .views_public_screening import RTOScreeningPublicView, RTOStudentAuthView, RTOStudentDashboardView, RTOStudentLoginView
+from .views_public_valuation import PublicValuationQuestionsView, PublicValuationSubmitView
+from .views_admin_rto import AdminRTOStudentsListView
+
+router = DefaultRouter()
+
+# Screening routers
+router.register(r'screened-assets', ScreenedAssetViewSet, basename='screened-asset')
+router.register(r'organization-types', OrganizationTypeViewSet, basename='organization-type')
+router.register(r'screening-templates', ScreeningTemplateViewSet, basename='screening-template')
+router.register(r'asset-files', AssetFileViewSet, basename='asset-file')
+
+# Valuation routers
+router.register(r'asset-types', valuation_views.AssetTypeViewSet, basename='asset-type')
+router.register(r'valuation-dimensions', valuation_views.ValuationDimensionViewSet, basename='valuation-dimension')
+router.register(r'valuation-questions', valuation_views.ValuationQuestionViewSet, basename='valuation-question')
+router.register(r'asset-valuations', valuation_views.AssetValuationViewSet, basename='asset-valuation')
+
+# Valuation Case routers
+router.register(r'valuation-cases', ValuationCaseViewSet, basename='valuation-cases')
+
+# STEP 3 routers
+router.register(r'valuation-step3', ValuationStep3ViewSet, basename='valuation-step3')
+
+# STEP 4 routers (Existing - Valuation Step4)
+router.register(r'valuation-step4', ValuationStep4ViewSet, basename='valuation-step4')
+
+# STEP 4 - Protection (NEW)
+router.register(r'protection', ProtectionViewSet, basename='protection')
+
+# Notification routers
+router.register(r'notifications', NotificationViewSet, basename='notifications')
+
+# Discovery routers
+router.register(r'discovery', DiscoveryAssessmentViewSet, basename='discovery')
+router.register(r'discovery-assets', DiscoveryAssetViewSet, basename='discovery-asset')
+router.register(r'valuation-qc', QualityControlViewSet, basename='valuation-qc')
+
+# Sensitivity routers (STEP 6)
+router.register(r'sensitivity', SensitivityAnalysisViewSet, basename='sensitivity')
+
+# Graph routers
+router.register(r'graph', GraphViewSet, basename='graph')
+
+urlpatterns = [
+    # 👑 Admin RTO Students
+    path("admin/rto-students/", AdminRTOStudentsListView.as_view(), name="admin-rto-students"),
+
+    # 🌐 Public RTO Screening (بدون لاگین)
+    path("public/rto-auth/", RTOStudentAuthView.as_view(), name="rto-auth"),
+    path("public/rto-login/", RTOStudentLoginView.as_view(), name="rto-login"),
+    path("public/rto-dashboard/", RTOStudentDashboardView.as_view(), name="rto-dashboard"),
+    path("public/rto-screening/", RTOScreeningPublicView.as_view(), name="rto-public-screening"),
+    path("public/rto-valuation/<int:asset_id>/questions/", PublicValuationQuestionsView.as_view(), name="rto-valuation-questions"),
+    path("public/rto-valuation/<int:asset_id>/submit/", PublicValuationSubmitView.as_view(), name="rto-valuation-submit"),
+
+    path("engine/commercialization/", include("intangible_assets.engine_06.urls")),
+    path('viam/', include('intangible_assets.viam.urls')),
+    path('maturity/', include('intangible_assets.engine_05.maturity_urls')),
+    path('external/discovery/', ExternalDiscoveryView.as_view(), name='external-discovery'),
+    path('claim-external-assets/', ClaimExternalAssetsView.as_view(), name='claim-external-assets'),
+    path('', include(router.urls)),
+    path('detect-asset-type/<str:asset_uid>/', DetectAssetTypeView.as_view(), name='detect_asset_type'),
+    path('suggest-template/', SuggestTemplateView.as_view(), name='suggest-template'),
+    path('api-stats/', APIStatsView.as_view(), name='api-stats'),
+    path('external-users/', ExternalUsersView.as_view(), name='external-users'),
+
+    # ⬇️⬇️⬇️ جدید: Dashboard Portfolio ⬇️⬇️⬇️
+    path('dashboard/portfolio/', DashboardPortfolioView.as_view(), name='dashboard-portfolio'),
+]
+
+
+# VIAM-01
+from .iam_urls import urlpatterns as viam_urls
+urlpatterns += [
+    path('viam/', include(viam_urls)),
+]
+
+# Strategic Planning
+from .strategic_planning_urls import urlpatterns as strategic_urls
+urlpatterns += [
+    path('strategic/', include(strategic_urls)),]
+
+
+# VIAM-03: Awareness & Culture
+from .viam_03_urls import urlpatterns as viam_03_urls
+urlpatterns += [
+    path('viam/awareness/', include(viam_03_urls)),]
+
+
+# VIAM-04: Competency & Professional Development
+from .viam.viam_04_urls import urlpatterns as viam_04_urls
+urlpatterns += [
+    path('viam/competency/', include(viam_04_urls)),
+]
+
+# VIAM-07: Committee & Decision Management
+from .viam.viam_07_urls import urlpatterns as viam_07_urls
+urlpatterns += [
+    path('viam/committee/', include(viam_07_urls)),
+]
+
+# VIAM-08: Knowledge Extraction & Institutionalization
+from .viam_08_urls import urlpatterns as viam_08_urls
+urlpatterns += [
+    path('viam/knowledge/', include(viam_08_urls)),
+]
+
+# VIAM-09: Risk, Protection & Compliance
+from .viam_09_urls import urlpatterns as viam_09_urls
+urlpatterns += [
+    path('viam/risk/', include(viam_09_urls)),
+]
+
+# VIAM-10: Performance, Audit & Maturity
+from .viam_10_urls import urlpatterns as viam_10_urls
+urlpatterns += [
+    path('viam/performance/', include(viam_10_urls)),
+]
+
+# VIAM-06: Workflow & Case Management
+from .viam_06_urls import urlpatterns as viam_06_urls
+urlpatterns += [
+    path('viam/workflow/', include(viam_06_urls)),
+]
+
+# VIAM-05: Ownership, Roles & RACI
+from .viam_05_urls import urlpatterns as viam_05_urls
+urlpatterns += [
+    path('viam/ownership/', include(viam_05_urls)),
+]
+
+# VIAM-11: Integration Hub - Connection to Meta Engines
+from .viam_11_urls import urlpatterns as viam_11_urls
+urlpatterns += [
+    path('viam/integration/', include(viam_11_urls)),
+]
+
+# Engine 04: Development & Innovation
+from .engine_04.urls import urlpatterns as engine_04_urls
+urlpatterns += [
+    path('engine/development/', include(engine_04_urls)),
+]
+
+# Business Types, Reports, Dashboards, KPIs
+from .role_models import BusinessType
+from .reporting_models import Report, Dashboard, KPI
+from rest_framework import serializers, viewsets
+from rest_framework.routers import DefaultRouter
+
+# ========== Serializers ==========
+class BusinessTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BusinessType
+        fields = '__all__'
+
+class ReportSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Report
+        fields = '__all__'
+
+class DashboardSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Dashboard
+        fields = '__all__'
+
+class KPISerializer(serializers.ModelSerializer):
+    class Meta:
+        model = KPI
+        fields = '__all__'
+
+# ========== Views ==========
+class BusinessTypeViewSet(viewsets.ModelViewSet):
+    queryset = BusinessType.objects.all()
+    serializer_class = BusinessTypeSerializer
+
+class ReportViewSet(viewsets.ModelViewSet):
+    queryset = Report.objects.all()
+    serializer_class = ReportSerializer
+
+class DashboardViewSet(viewsets.ModelViewSet):
+    queryset = Dashboard.objects.all()
+    serializer_class = DashboardSerializer
+
+class KPIViewSet(viewsets.ModelViewSet):
+    queryset = KPI.objects.all()
+    serializer_class = KPISerializer
+
+# ========== Router ==========
+router = DefaultRouter()
+router.register(r'business-types', BusinessTypeViewSet, basename='business-types')
+router.register(r'reports', ReportViewSet, basename='reports')
+router.register(r'dashboards', DashboardViewSet, basename='dashboards')
+router.register(r'kpis', KPIViewSet, basename='kpis')
+
+urlpatterns += router.urls
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Operational Model (گام ۱۰ VIAM-01)
+# ═══════════════════════════════════════════════════════════
+from .operational_model_api import OperationalModelViewSet
+from rest_framework.routers import DefaultRouter as DR
+
+op_router = DR()
+op_router.register(r'operational-model', OperationalModelViewSet, basename='operational-model')
+urlpatterns += [
+    path('viam/', include(op_router.urls)),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Tenant Config (گام ۱۱ VIAM-01)
+# ═══════════════════════════════════════════════════════════
+from .tenant_config_api import TenantConfigViewSet
+from rest_framework.routers import DefaultRouter as DR2
+
+tc_router = DR2()
+tc_router.register(r'tenant-config', TenantConfigViewSet, basename='tenant-config')
+urlpatterns += [
+    path('viam/', include(tc_router.urls)),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 VIAM Pilot (گام ۱۲ VIAM-01)
+# ═══════════════════════════════════════════════════════════
+from .pilot_api import VIAMPilotViewSet
+from rest_framework.routers import DefaultRouter as DR3
+
+pilot_router = DR3()
+pilot_router.register(r'pilot', VIAMPilotViewSet, basename='viam-pilot')
+urlpatterns += [
+    path('viam/', include(pilot_router.urls)),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Organization Dashboard Stats
+# ═══════════════════════════════════════════════════════════
+from .views_org_dashboard import OrgDashboardStatsView
+urlpatterns += [
+    path('dashboard/org-stats/', OrgDashboardStatsView.as_view(), name='org-dashboard-stats'),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Unit Dashboard Stats (برای org_user)
+# ═══════════════════════════════════════════════════════════
+from .views_unit_dashboard import UnitDashboardStatsView
+urlpatterns += [
+    path('dashboard/unit-stats/', UnitDashboardStatsView.as_view(), name='unit-dashboard-stats'),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Super Admin Dashboard
+# ═══════════════════════════════════════════════════════════
+from .views_super_dashboard import SuperAdminDashboardView
+urlpatterns += [
+    path('dashboard/super-stats/', SuperAdminDashboardView.as_view(), name='super-dashboard-stats'),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Registered Assets (بهینه)
+# ═══════════════════════════════════════════════════════════
+from .views_registered_assets import RegisteredAssetsView
+urlpatterns += [
+    path('valuation/registered-assets/', RegisteredAssetsView.as_view(), name='registered-assets'),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Approved Assets for Valuation (بهینه)
+# ═══════════════════════════════════════════════════════════
+from .views_approved_assets import ApprovedAssetsForValuationView
+urlpatterns += [
+    path('valuation/approved-assets/', ApprovedAssetsForValuationView.as_view(), name='approved-assets'),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Asset Valuation Summary (بهینه)
+# ═══════════════════════════════════════════════════════════
+from .views_asset_summary import AssetValuationSummaryView
+urlpatterns += [
+    path('valuation/asset-summary/<int:asset_id>/', AssetValuationSummaryView.as_view(), name='asset-valuation-summary'),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Completed Valuations (بهینه)
+# ═══════════════════════════════════════════════════════════
+from .views_completed_valuations import CompletedValuationsView
+urlpatterns += [
+    path('valuation/completed-summaries/', CompletedValuationsView.as_view(), name='completed-valuations'),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Assets with Valuation Status (بهینه)
+# ═══════════════════════════════════════════════════════════
+from .views_assets_with_valuation import AssetsWithValuationStatusView
+urlpatterns += [
+    path('valuation/assets-with-status/', AssetsWithValuationStatusView.as_view(), name='assets-with-status'),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Asset Full Detail (بهینه)
+# ═══════════════════════════════════════════════════════════
+from .views_asset_full_detail import AssetFullDetailView
+urlpatterns += [
+    path('assets/<int:asset_id>/full-detail/', AssetFullDetailView.as_view(), name='asset-full-detail'),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Screened Assets List (بهینه)
+# ═══════════════════════════════════════════════════════════
+from .views_screened_list import ScreenedAssetsListView
+urlpatterns += [
+    path('screening/screened-assets/', ScreenedAssetsListView.as_view(), name='screened-assets-list'),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Bulk Create Screened Assets
+# ═══════════════════════════════════════════════════════════
+from .views_bulk_create import BulkCreateScreenedAssetsView
+urlpatterns += [
+    path('screening/bulk-create/', BulkCreateScreenedAssetsView.as_view(), name='bulk-create-assets'),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Valuation Detail (بهینه)
+# ═══════════════════════════════════════════════════════════
+from .views_valuation_detail import ValuationDetailView
+urlpatterns += [
+    path('valuation/<int:asset_id>/detail/', ValuationDetailView.as_view(), name='valuation-detail'),
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# 🎯 Engine 05: توسعه و نوآوری (Asset Development & Innovation)
+# ═══════════════════════════════════════════════════════════
+from .engine_05.urls import urlpatterns as engine_05_urls
+urlpatterns += [
+    path('engine/asset-development/', include(engine_05_urls)),
+]

@@ -1,0 +1,1370 @@
+from rest_framework import viewsets, permissions, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from django.db.models import Q
+from django.utils import timezone
+
+from .models import (
+    DevelopmentOpportunity,
+    InnovationIdea,
+    PrioritizedProject,
+    ProjectCharter,
+    GanttSchedule,
+    AllocatedBudget,
+    ProgressReport,
+    DevelopedOrNewAsset,
+    ProjectClosureReport,
+    UnitBudget)
+from .serializers import (
+    DevelopmentOpportunitySerializer,
+    InnovationIdeaSerializer,
+    PrioritizedProjectSerializer,
+    ProjectCharterSerializer,
+    GanttScheduleSerializer,
+    AllocatedBudgetSerializer,
+    ProgressReportSerializer,
+    DevelopedOrNewAssetSerializer,
+    ProjectClosureReportSerializer,
+    UnitBudgetSerializer)
+from django.db import models
+
+
+class DevelopmentOpportunityViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet فرصت‌های توسعه (گام ۱ موتور ۴)
+    """
+    queryset = DevelopmentOpportunity.objects.all()
+    serializer_class = DevelopmentOpportunitySerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = DevelopmentOpportunity.objects.all()
+        
+        # فیلتر بر اساس نقش
+        if user.role == 'super_admin':
+            pass
+        elif user.role == 'org_admin':
+            queryset = queryset.filter(organization=user.organization)
+        elif user.role == 'org_user':
+            queryset = queryset.filter(
+                Q(created_by=user) | Q(organization=user.organization)
+            )
+        
+        # فیلترها
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        gap_type = self.request.query_params.get('gap_type')
+        if gap_type:
+            queryset = queryset.filter(gap_type=gap_type)
+        
+        target_module = self.request.query_params.get('target_module')
+        if target_module:
+            queryset = queryset.filter(target_module=target_module)
+        
+        asset_id = self.request.query_params.get('asset')
+        if asset_id:
+            queryset = queryset.filter(asset_id=asset_id)
+        
+        is_critical = self.request.query_params.get('is_critical')
+        if is_critical == 'true':
+            queryset = queryset.filter(is_critical=True)
+        
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(asset_name__icontains=search) | Q(description__icontains=search)
+            )
+        
+        return queryset.select_related('asset', 'organization', 'created_by')
+    
+    def perform_create(self, serializer):
+        """هنگام ساخت، created_by و organization رو ست کن"""
+        user = self.request.user
+        organization = None
+        
+        if user.role == 'org_admin':
+            organization = user.organization
+        elif user.role == 'org_user':
+            organization = user.organization
+        
+        # محاسبه gap_score
+        opp = serializer.save(created_by=user, organization=organization)
+        opp.calculate_gap_score()
+        opp.save()
+    
+    @action(detail=False, methods=['get'])
+    def critical(self, request):
+        """فرصت‌های بحرانی"""
+        queryset = self.get_queryset().filter(is_critical=True)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        """آمار فرصت‌ها"""
+        queryset = self.get_queryset()
+        
+        return Response({
+            'total': queryset.count(),
+            'critical': queryset.filter(is_critical=True).count(),
+            'by_status': {
+                'identified': queryset.filter(status='identified').count(),
+                'scored': queryset.filter(status='scored').count(),
+                'approved': queryset.filter(status='approved').count(),
+                'backlog': queryset.filter(status='backlog').count(),
+                'rejected': queryset.filter(status='rejected').count(),
+                'in_progress': queryset.filter(status='in_progress').count(),
+                'completed': queryset.filter(status='completed').count(),
+            },
+            'by_module': {
+                'DEV': queryset.filter(target_module='DEV').count(),
+                'INNO': queryset.filter(target_module='INNO').count(),
+            },
+        })
+    
+    @action(detail=True, methods=['post'])
+    def recalculate_gap(self, request, pk=None):
+        """محاسبه مجدد امتیاز شکاف"""
+        opp = self.get_object()
+        weights = request.data.get('weights')
+        score = opp.calculate_gap_score(weights)
+        opp.save()
+        return Response({
+            'gap_score': score,
+            'is_critical': opp.is_critical,
+        })
+    
+    @action(detail=False, methods=['post'], url_path='analyze-all')
+    def analyze_all(self, request):
+        """
+        🎯 تحلیل شکاف خودکار همه دارایی‌ها
+        از موتور ۲ (Valuation) + بنچمارک‌ها
+        """
+        from .services.gap_analytics import gap_analytics_service
+        
+        user = request.user
+        organization = None
+        business_type = request.data.get('business_type', 'manufacturing')
+        
+        if user.role in ['org_admin', 'org_user']:
+            organization = user.organization
+            # اگه organization_type داره، ازش استفاده کن
+            if hasattr(user, 'organization_type') and user.organization_type:
+                business_type = user.organization_type
+        
+        result = gap_analytics_service.analyze_all_assets(
+            organization=organization,
+            business_type=business_type,
+            user=user,
+        )
+        
+        return Response(result)
+
+
+    @action(detail=True, methods=['post'], url_path='create-project')
+    def create_project(self, request, pk=None):
+        """
+        🎯 تبدیل یه فرصت به پروژه (گام ۱ → گام ۲)
+        """
+        from .services.score_engine import score_engine_service
+        from .serializers import PrioritizedProjectSerializer
+        
+        opp = self.get_object()
+        
+        # business_type از user یا request
+        business_type = request.data.get('business_type', 'manufacturing')
+        if hasattr(request.user, 'organization_type') and request.user.organization_type:
+            business_type = request.user.organization_type
+        
+        from .services.score_engine import BelowThresholdError
+        
+        try:
+            project = score_engine_service.create_project_from_opportunity(
+                opp, business_type=business_type, user=request.user
+            )
+            return Response(
+                PrioritizedProjectSerializer(project).data,
+                status=status.HTTP_201_CREATED,
+            )
+        except BelowThresholdError as e:
+            return Response(
+                {'error': str(e), 'code': 'BELOW_THRESHOLD'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    @action(detail=True, methods=['post'], url_path='restore')
+    def restore(self, request, pk=None):
+        """
+        🆕 بازگرداندن فرصت از backlog به identified
+        """
+        opp = self.get_object()
+        
+        if opp.status != 'backlog':
+            return Response(
+                {'error': f'این فرصت در backlog نیست (وضعیت فعلی: {opp.get_status_display()})'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        opp.status = 'identified'
+        opp.save(update_fields=['status'])
+        
+        return Response({
+            'status': 'restored',
+            'message': f'فرصت «{opp.asset_name}» به لیست اصلی بازگشت',
+            'opportunity': DevelopmentOpportunitySerializer(opp).data,
+        })
+
+    @action(detail=False, methods=['post'], url_path='bulk-restore')
+    def bulk_restore(self, request):
+        """
+        🆕 بازگرداندن چند فرصت از backlog
+        """
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response(
+                {'error': 'هیچ فرصتی انتخاب نشده'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        queryset = self.get_queryset().filter(id__in=ids, status='backlog')
+        count = queryset.update(status='identified')
+        
+        return Response({
+            'restored': count,
+            'message': f'{count} فرصت بازگشت',
+        })
+
+
+class InnovationIdeaViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet ایده‌های نوآوری (گام ۱ موتور ۴)
+    """
+    queryset = InnovationIdea.objects.all()
+    serializer_class = InnovationIdeaSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = InnovationIdea.objects.all()
+        
+        if user.role == 'super_admin':
+            pass
+        elif user.role == 'org_admin':
+            queryset = queryset.filter(organization=user.organization)
+        elif user.role == 'org_user':
+            queryset = queryset.filter(
+                Q(created_by=user) | Q(organization=user.organization)
+            )
+        
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        source = self.request.query_params.get('source')
+        if source:
+            queryset = queryset.filter(source=source)
+        
+        tech_domain = self.request.query_params.get('tech_domain')
+        if tech_domain:
+            queryset = queryset.filter(tech_domain=tech_domain)
+        
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search) | Q(concept_desc__icontains=search)
+            )
+        
+        return queryset.select_related('organization', 'created_by')
+    
+    def perform_create(self, serializer):
+        user = self.request.user
+        organization = None
+        
+        if user.role == 'org_admin':
+            organization = user.organization
+        elif user.role == 'org_user':
+            organization = user.organization
+        
+        serializer.save(created_by=user, organization=organization)
+    
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        """آمار ایده‌ها"""
+        queryset = self.get_queryset()
+        
+        return Response({
+            'total': queryset.count(),
+            'by_status': {
+                'draft': queryset.filter(status='draft').count(),
+                'submitted': queryset.filter(status='submitted').count(),
+                'approved': queryset.filter(status='approved').count(),
+                'rejected': queryset.filter(status='rejected').count(),
+                'in_progress': queryset.filter(status='in_progress').count(),
+                'completed': queryset.filter(status='completed').count(),
+            },
+            'by_source': {
+                'rnd': queryset.filter(source='rnd').count(),
+                'employee': queryset.filter(source='employee').count(),
+                'external': queryset.filter(source='external').count(),
+                'university': queryset.filter(source='university').count(),
+            },
+        })
+
+
+# ═══════════════════════════════════════════════════════════
+# گام ۲: PrioritizedProject
+# ═══════════════════════════════════════════════════════════
+
+class PrioritizedProjectViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet پروژه‌های اولویت‌بندی‌شده (گام ۲ موتور ۴)
+    """
+    queryset = PrioritizedProject.objects.all()
+    serializer_class = PrioritizedProjectSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = PrioritizedProject.objects.all()
+        
+        if user.role == 'super_admin':
+            pass
+        elif user.role == 'org_admin':
+            queryset = queryset.filter(organization=user.organization)
+        elif user.role == 'org_user':
+            queryset = queryset.filter(
+                Q(organization=user.organization) | Q(created_by=user)
+            )
+        
+        # فیلترها
+        status_filter = self.request.query_params.get('approval_status')
+        if status_filter:
+            queryset = queryset.filter(approval_status=status_filter)
+        
+        project_type = self.request.query_params.get('project_type')
+        if project_type:
+            queryset = queryset.filter(project_type=project_type)
+        
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(title__icontains=search)
+        
+        return queryset.select_related('organization', 'created_by', 'approved_by', 'opportunity', 'innovation_idea')
+    
+    def perform_create(self, serializer):
+        user = self.request.user
+        organization = None
+        
+        if user.role in ['org_admin', 'org_user']:
+            organization = user.organization
+        
+        # محاسبه priority_score
+        project = serializer.save(created_by=user, organization=organization)
+        weights = self.request.data.get('weights')
+        project.calculate_priority_score(weights)
+        project.save()
+    
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        """آمار پروژه‌ها"""
+        queryset = self.get_queryset()
+        
+        return Response({
+            'total': queryset.count(),
+            'by_status': {
+                'pending': queryset.filter(approval_status='pending').count(),
+                'approved': queryset.filter(approval_status='approved').count(),
+                'backlog': queryset.filter(approval_status='backlog').count(),
+                'rejected': queryset.filter(approval_status='rejected').count(),
+            },
+            'by_type': {
+                'DEV': queryset.filter(project_type='DEV').count(),
+                'INNO': queryset.filter(project_type='INNO').count(),
+            },
+            'total_estimated_budget': float(
+                queryset.aggregate(total=models.Sum('estimated_budget'))['total'] or 0
+            ),
+            'total_approved_budget': float(
+                queryset.aggregate(total=models.Sum('approved_budget'))['total'] or 0
+            ),
+        })
+    
+
+    @action(detail=False, methods=['get'], url_path='suggested-approach')
+    def suggested_approach(self, request):
+        """
+        متدولوژی پیشنهادی بر اساس asset_type_id + project_type
+
+        استفاده:
+            GET /api/.../projects/suggested-approach/?project_id=4
+            GET /api/.../projects/suggested-approach/?asset_type_id=3&project_type=DEV
+            GET /api/.../projects/suggested-approach/?asset_type_id=3&project_type=INNO
+        """
+        from .services.approach_mapping import approach_mapping_service
+
+        asset_type_id = request.query_params.get('asset_type_id')
+        project_type = request.query_params.get('project_type', 'DEV')
+        project_id = request.query_params.get('project_id')
+
+        # اگه project_id داده شد، از پروژه استخراج کن
+        if not asset_type_id and project_id:
+            try:
+                project = self.get_queryset().select_related(
+                    'opportunity__asset__asset_type'
+                ).get(pk=project_id)
+
+                # asset_type از opportunity.asset
+                if project.opportunity and project.opportunity.asset:
+                    asset_type = getattr(project.opportunity.asset, 'asset_type', None)
+                    if asset_type:
+                        asset_type_id = asset_type.id
+
+                # project_type از خود پروژه
+                if project.project_type:
+                    project_type = project.project_type
+
+            except PrioritizedProject.DoesNotExist:
+                return Response(
+                    {'error': 'پروژه پیدا نشد'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+        if not asset_type_id:
+            return Response(
+                {'error': 'asset_type_id یا project_id لازم است'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = approach_mapping_service.suggest(
+                asset_type_id=int(asset_type_id),
+                project_type=project_type,
+            )
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if not result:
+            return Response(
+                {'error': 'توصیه‌ای یافت نشد'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response({
+            'asset_type_id': int(asset_type_id),
+            'project_type': project_type,
+            'recommended_methodology': result['recommended_methodology'],
+            'gate_count': result['gate_count'],
+            'risk_level': result['risk_level'],
+            'uncertainty_level': result['uncertainty_level'],
+            'description': result['description'],
+        })
+
+    @action(detail=False, methods=['get'], url_path='suggested-kpis')
+    def suggested_kpis(self, request):
+        """
+        KPIهای پیشنهادی بر اساس asset_type_id
+
+        استفاده:
+            GET /api/intangible/engine/asset-development/projects/suggested-kpis/?asset_type_id=9
+            GET /api/intangible/engine/asset-development/projects/suggested-kpis/?project_id=4
+            GET /api/intangible/engine/asset-development/projects/suggested-kpis/?asset_type_id=9&output_type=PATENT
+        """
+        from .services.success_metrics import success_metrics_service
+
+        asset_type_id = request.query_params.get('asset_type_id')
+        output_type = request.query_params.get('output_type')
+        project_id = request.query_params.get('project_id')
+
+        # اگه project_id داده شد، asset_type_id رو از مسیر پروژه استخراج کن
+        if not asset_type_id and project_id:
+            try:
+                project = self.get_queryset().select_related(
+                    'opportunity__asset__asset_type'
+                ).get(pk=project_id)
+                if project.opportunity and project.opportunity.asset:
+                    asset_type = getattr(project.opportunity.asset, 'asset_type', None)
+                    if asset_type:
+                        asset_type_id = asset_type.id
+            except PrioritizedProject.DoesNotExist:
+                return Response(
+                    {'error': 'پروژه پیدا نشد'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+        if not asset_type_id:
+            return Response(
+                {'error': 'asset_type_id یا project_id لازم است'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            metrics = success_metrics_service.get_metrics(
+                asset_type_id=int(asset_type_id),
+                output_type=output_type,
+            )
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response({
+            'asset_type_id': int(asset_type_id),
+            'output_type': output_type,
+            'count': len(metrics),
+            'metrics': metrics,
+        })
+
+
+    @action(detail=False, methods=['get'], url_path='stats-completion')
+    def stats_completion(self, request):
+        """
+        آمار تجمیعی تکمیل — تعداد دارایی و گزارش اختتام هر پروژه
+
+        استفاده:
+            GET /api/intangible/engine/asset-development/projects/stats-completion/
+
+        Response:
+            {
+                "projects": [
+                    {"id": 1, "title": "...", "assets_count": 1, "closures_count": 0},
+                    ...
+                ],
+                "totals": {"projects": 10, "assets": 1, "closures": 0}
+            }
+        """
+        queryset = self.get_queryset()
+
+        # جمع‌آوری بهینه — یه query برای دارایی‌ها، یه query برای گزارش‌ها
+        project_ids = list(queryset.values_list('id', flat=True))
+
+        assets_by_project = {}
+        for row in DevelopedOrNewAsset.objects.filter(
+            project_id__in=project_ids
+        ).values('project_id').annotate(count=models.Count('id')):
+            assets_by_project[row['project_id']] = row['count']
+
+        closures_by_project = {}
+        for row in ProjectClosureReport.objects.filter(
+            project_id__in=project_ids
+        ).values('project_id').annotate(count=models.Count('id')):
+            closures_by_project[row['project_id']] = row['count']
+
+        # ساختار خروجی
+        projects_data = []
+        for p in queryset:
+            projects_data.append({
+                'id': p.id,
+                'title': p.title,
+                'project_type': p.project_type,
+                'project_type_display': p.get_project_type_display(),
+                'approval_status': p.approval_status,
+                'assets_count': assets_by_project.get(p.id, 0),
+                'closures_count': closures_by_project.get(p.id, 0),
+            })
+
+        return Response({
+            'projects': projects_data,
+            'totals': {
+                'projects': len(projects_data),
+                'assets': sum(p['assets_count'] for p in projects_data),
+                'closures': sum(p['closures_count'] for p in projects_data),
+            },
+        })
+
+    @action(detail=True, methods=['get'], url_path='suggest-methodology')
+    def suggest_methodology(self, request, pk=None):
+        """
+        پیشنهاد methodology بر اساس asset_type و project_type
+        از ProjectApproach_Mapping.csv
+
+        استفاده:
+            GET /api/.../projects/1/suggest-methodology/
+        """
+        from .services.project_approach import suggest_for_project
+
+        project = self.get_object()
+        result = suggest_for_project(project)
+
+        return Response({
+            'project_id': project.id,
+            'project_type': project.project_type,
+            **result,
+        })
+
+
+    @action(detail=False, methods=['get'], url_path='alerts')
+    def all_alerts(self, request):
+        """
+        هشدارهای همه پروژه‌ها
+
+        استفاده:
+            GET /api/.../projects/alerts/
+            GET /api/.../projects/alerts/?approval_status=approved
+        """
+        from .services.alerts import get_all_alerts
+
+        queryset = self.get_queryset()
+
+        # فیلتر
+        approval_status = request.query_params.get('approval_status')
+        if approval_status:
+            queryset = queryset.filter(approval_status=approval_status)
+
+        result = get_all_alerts(queryset)
+        return Response(result)
+
+    @action(detail=True, methods=['get'], url_path='project-alerts')
+    def project_alerts(self, request, pk=None):
+        """
+        هشدارهای یه پروژه خاص
+        """
+        from .services.alerts import get_project_alerts
+
+        project = self.get_object()
+        result = get_project_alerts(project)
+        return Response(result)
+
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        """تأیید پروژه با چک min_approval_score از InvestmentThresholds.csv"""
+        from .services.thresholds import get_threshold
+
+        project = self.get_object()
+        user = request.user
+
+        # چک min_approval_score
+        business_type = None
+        if project.organization and hasattr(project.organization, 'type'):
+            business_type = project.organization.type
+
+        min_score = get_threshold(business_type, 'min_approval_score', default=3.5)
+
+        if project.priority_score < min_score:
+            return Response(
+                {
+                    'error': f'امتیاز اولویت پروژه ({project.priority_score:.2f}) کمتر از حداقل مورد نیاز ({min_score}) است',
+                    'min_required': min_score,
+                    'current': project.priority_score,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # بودجه مصوب
+        approved_budget = request.data.get('approved_budget', project.estimated_budget)
+        comment = request.data.get('comment', '')
+
+        project.approval_status = 'approved'
+        project.approved_budget = approved_budget
+        project.approved_by = user
+        project.approved_at = timezone.now()
+        project.committee_comment = comment
+        project.save()
+
+        return Response({
+            'success': True,
+            'project_id': project.id,
+            'approved_budget': str(project.approved_budget),
+            'priority_score': project.priority_score,
+        })
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        """رد پروژه"""
+        project = self.get_object()
+        
+        if request.user.role not in ['super_admin', 'org_admin']:
+            return Response(
+                {'error': 'دسترسی ندارید'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        project.approval_status = 'rejected'
+        project.approved_by = request.user
+        project.approved_at = timezone.now()
+        project.committee_comment = request.data.get('comment', '')
+        project.save()
+        
+        serializer = self.get_serializer(project)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['post'])
+    def recalculate_ranks(self, request):
+        """محاسبه مجدد رتبه‌ها"""
+        from .services.score_engine import score_engine_service
+        
+        organization = None
+        if request.user.role in ['org_admin', 'org_user']:
+            organization = request.user.organization
+        
+        count = score_engine_service.recalculate_ranks(organization)
+        return Response({
+            'message': f'{count} پروژه رتبه‌بندی شد',
+            'count': count,
+        })
+    
+    @action(detail=False, methods=['get'], url_path='executable')
+    def executable(self, request):
+        """
+        🎯 لیست پروژه‌های قابل اجرا برای واحد کاربر
+        بر اساس بودجه + بازه زمانی واحد
+        """
+        user = request.user
+
+        if not user.department_id:
+            return Response({
+                'budget': None,
+                'projects': [],
+                'summary': None,
+                'message': 'کاربر به هیچ واحدی تخصیص داده نشده',
+            })
+
+        unit_budget = UnitBudget.objects.filter(
+            department_id=user.department_id
+        ).order_by('-start_date').first()
+
+        if not unit_budget:
+            return Response({
+                'budget': None,
+                'projects': [],
+                'summary': None,
+                'message': 'برای واحد شما بودجه‌ای تعریف نشده',
+            })
+
+        projects_qs = PrioritizedProject.objects.filter(
+            department_id=user.department_id,
+            approval_status='approved',
+        ).select_related('organization', 'department', 'opportunity')
+
+        result = []
+        total_allocated = 0
+
+        for p in projects_qs:
+            # 🆕 بودجه‌ی نهایی از AllocatedBudget (گام ۳)
+            allocated = getattr(p, 'allocated_budget', None)
+            if allocated and allocated.total_amount:
+                p_budget = float(allocated.total_amount)
+            else:
+                p_budget = float(p.approved_budget or p.estimated_budget or 0)
+
+            total_allocated += p_budget
+
+            gantt = getattr(p, 'gantt_schedule', None)
+            g_start = gantt.start_date if gantt else None
+            g_end = gantt.end_date if gantt else None
+
+            budget_ok = p_budget <= float(unit_budget.amount)
+            time_ok = True
+            if g_start and g_end:
+                time_ok = (
+                    g_start >= unit_budget.start_date and
+                    g_end <= unit_budget.end_date
+                )
+
+            reasons = []
+            if not budget_ok:
+                reasons.append(f'بودجه پروژه ({p_budget:,.0f}) از بودجه واحد بیشتره')
+            if not time_ok:
+                reasons.append('بازه زمانی پروژه خارج از بازه بودجه واحد است')
+
+            # 🆕 asset_type از opportunity.asset
+            asset_type_id = None
+            asset_type_name = None
+            asset_type_code = None
+            category = None
+            category_label = None
+
+            if p.opportunity and p.opportunity.asset:
+                asset = p.opportunity.asset
+                if asset.asset_type:
+                    at = asset.asset_type
+                    asset_type_id = at.id
+                    asset_type_name = at.name
+                    asset_type_code = at.code
+
+                # 🆕 category از ScreenedAsset
+                category = getattr(asset, 'category', None)
+                if category:
+                    # تبدیل strategic_economic → استراتژیک
+                    cat_map = {
+                        'strategic_economic': 'استراتژیک',
+                        'strategic_social': 'استراتژیک',
+                        'strategic_knowledge': 'استراتژیک',
+                        'strategic_cultural': 'استراتژیک',
+                        'strategic_environmental': 'استراتژیک',
+                        'operational_economic': 'عملیاتی',
+                        'operational_social': 'عملیاتی',
+                        'operational_knowledge': 'عملیاتی',
+                        'operational_cultural': 'عملیاتی',
+                        'operational_environmental': 'عملیاتی',
+                        'support_economic': 'پشتیبان',
+                        'support_social': 'پشتیبان',
+                        'support_knowledge': 'پشتیبان',
+                        'support_cultural': 'پشتیبان',
+                        'support_environmental': 'پشتیبان',
+                    }
+                    category_label = cat_map.get(category, category)
+
+            result.append({
+                'id': p.id,
+                'title': p.title,
+                'project_type': p.project_type,
+                'priority_score': p.priority_score,
+                'rank': p.rank,
+                'asset_type_id': asset_type_id,
+                'asset_type_name': asset_type_name,
+                'asset_type_code': asset_type_code,
+                'category': category,
+                'category_label': category_label,
+                'approved_budget': float(p.approved_budget or 0),
+                'estimated_budget': float(p.estimated_budget or 0),
+                'project_budget': p_budget,  # 🆕 بودجه مؤثر (از AllocatedBudget)
+                'department_name': p.department.name if p.department else None,
+                'organization_name': p.organization.name if p.organization else None,
+                'gantt': {
+                    'start_date': str(g_start) if g_start else None,
+                    'end_date': str(g_end) if g_end else None,
+                } if gantt else None,
+                'is_executable': budget_ok and time_ok,
+                'budget_ok': budget_ok,
+                'time_ok': time_ok,
+                'reasons': reasons,
+            })
+
+        result.sort(key=lambda x: (not x['is_executable'], x['rank'] or 9999))
+
+        over_budget = total_allocated > float(unit_budget.amount)
+
+        # 🆕 دسته‌بندی بر اساس category (استراتژیک/عملیاتی/پشتیبان)
+        by_category = {}
+        for r in result:
+            key = r['category_label'] or 'نامشخص'
+            if key not in by_category:
+                by_category[key] = {
+                    'category': r['category'] or 'unknown',
+                    'category_label': key,
+                    'count': 0,
+                    'executable_count': 0,
+                    'total_budget': 0,
+                }
+            by_category[key]['count'] += 1
+            if r['is_executable']:
+                by_category[key]['executable_count'] += 1
+            by_category[key]['total_budget'] += r['project_budget']
+
+        by_category_list = sorted(
+            by_category.values(),
+            key=lambda x: x['count'],
+            reverse=True,
+        )
+
+        # 🆕 دسته‌بندی بر اساس asset_type
+        by_asset_type = {}
+        for r in result:
+            key = r['asset_type_id']
+            if key not in by_asset_type:
+                by_asset_type[key] = {
+                    'asset_type_id': key,
+                    'asset_type_name': r['asset_type_name'] or 'نامشخص',
+                    'asset_type_code': r['asset_type_code'] or 'N/A',
+                    'count': 0,
+                    'executable_count': 0,
+                    'total_budget': 0,
+                }
+            by_asset_type[key]['count'] += 1
+            if r['is_executable']:
+                by_asset_type[key]['executable_count'] += 1
+            by_asset_type[key]['total_budget'] += r['project_budget']
+
+        by_asset_type_list = sorted(
+            by_asset_type.values(),
+            key=lambda x: x['count'],
+            reverse=True,
+        )
+
+        summary = {
+            'total_budget': float(unit_budget.amount),
+            'total_allocated': total_allocated,
+            'remaining': float(unit_budget.amount) - total_allocated,
+            'over_budget': over_budget,
+            'start_date': str(unit_budget.start_date),
+            'end_date': str(unit_budget.end_date),
+            'department_name': unit_budget.department.name,
+            'projects_count': len(result),
+            'executable_count': sum(1 for r in result if r['is_executable']),
+            'by_category': by_category_list,
+            'by_asset_type': by_asset_type_list,
+        }
+
+        return Response({
+            'budget': UnitBudgetSerializer(unit_budget).data,
+            'projects': result,
+            'summary': summary,
+        })
+
+    @action(detail=False, methods=['post'], url_path='create-from-opportunities')
+    def create_from_opportunities(self, request):
+        """
+        🎯 ساخت PrioritizedProject از همه فرصت‌ها و ایده‌ها با MCDM
+        """
+        from .services.score_engine import score_engine_service
+        
+        user = request.user
+        organization = None
+        business_type = request.data.get('business_type', 'manufacturing')
+        
+        if user.role in ['org_admin', 'org_user']:
+            organization = user.organization
+            if hasattr(user, 'organization_type') and user.organization_type:
+                business_type = user.organization_type
+        
+        # Note: bulk mode فقط فرصت‌های بالای آستانه رو تبدیل می‌کنه (score_engine خودش چک می‌کنه)
+        result = score_engine_service.create_all_projects(
+            organization=organization,
+            business_type=business_type,
+            user=user,
+        )
+        
+        return Response(result)
+
+
+# ═══════════════════════════════════════════════════════════
+# گام ۳: ProjectCharter
+# ═══════════════════════════════════════════════════════════
+
+class ProjectCharterViewSet(viewsets.ModelViewSet):
+    queryset = ProjectCharter.objects.all()
+    serializer_class = ProjectCharterSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = ProjectCharter.objects.all()
+        
+        if user.role == 'super_admin':
+            pass
+        elif user.role in ['org_admin', 'org_user']:
+            queryset = queryset.filter(project__organization=user.organization)
+        
+        project_id = self.request.query_params.get('project')
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        
+        return queryset.select_related('project', 'created_by')
+    
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+# ═══════════════════════════════════════════════════════════
+# گام ۳: GanttSchedule
+# ═══════════════════════════════════════════════════════════
+
+class GanttScheduleViewSet(viewsets.ModelViewSet):
+    queryset = GanttSchedule.objects.all()
+    serializer_class = GanttScheduleSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = GanttSchedule.objects.all()
+        
+        if user.role == 'super_admin':
+            pass
+        elif user.role in ['org_admin', 'org_user']:
+            queryset = queryset.filter(project__organization=user.organization)
+        
+        project_id = self.request.query_params.get('project')
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        
+        return queryset.select_related('project', 'created_by')
+    
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+# ═══════════════════════════════════════════════════════════
+# گام ۳: AllocatedBudget
+# ═══════════════════════════════════════════════════════════
+
+class AllocatedBudgetViewSet(viewsets.ModelViewSet):
+    queryset = AllocatedBudget.objects.all()
+    serializer_class = AllocatedBudgetSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = AllocatedBudget.objects.all()
+        
+        if user.role == 'super_admin':
+            pass
+        elif user.role in ['org_admin', 'org_user']:
+            queryset = queryset.filter(project__organization=user.organization)
+        
+        project_id = self.request.query_params.get('project')
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        
+        return queryset.select_related('project', 'created_by')
+    
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+# ═══════════════════════════════════════════════════════════
+# گام ۴: ProgressReport
+# ═══════════════════════════════════════════════════════════
+
+class ProgressReportViewSet(viewsets.ModelViewSet):
+    queryset = ProgressReport.objects.all()
+    serializer_class = ProgressReportSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = ProgressReport.objects.all()
+        
+        if user.role == 'super_admin':
+            pass
+        elif user.role in ['org_admin', 'org_user']:
+            queryset = queryset.filter(project__organization=user.organization)
+        
+        project_id = self.request.query_params.get('project')
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        
+        gate_decision = self.request.query_params.get('gate_decision')
+        if gate_decision:
+            queryset = queryset.filter(gate_decision=gate_decision)
+        
+        return queryset.select_related('project', 'reported_by')
+    
+    def perform_create(self, serializer):
+        # شماره گزارش خودکار
+        project = serializer.validated_data.get('project')
+        last_report = ProgressReport.objects.filter(project=project).order_by('-report_number').first()
+        next_number = (last_report.report_number + 1) if last_report else 1
+        
+        serializer.save(reported_by=self.request.user, report_number=next_number)
+
+
+# ═══════════════════════════════════════════════════════════
+# گام ۵: DevelopedOrNewAsset
+# ═══════════════════════════════════════════════════════════
+
+
+    @action(detail=True, methods=['post'], url_path='recalculate_gate')
+    def recalculate_gate(self, request, pk=None):
+        """
+        محاسبه مجدد gate_decision بر اساس SPI/CPI
+
+        استفاده:
+            POST /api/.../progress/1/recalculate_gate/
+        """
+        from .services.stage_gate import auto_gate_decision
+
+        report = self.get_object()
+        result = auto_gate_decision(
+            spi=float(report.spi or 1.0),
+            cpi=float(report.cpi or 1.0),
+            physical_progress=float(report.physical_progress_pct or 0),
+            budget_consumed=float(report.budget_consumed_pct or 0),
+        )
+
+        # آپدیت
+        report.gate_decision = result['decision']
+        if not report.gate_notes:
+            report.gate_notes = result['reason']
+        report.save(update_fields=['gate_decision', 'gate_notes'])
+
+        return Response({
+            'report_id': report.id,
+            'decision': result['decision'],
+            'reason': result['reason'],
+            'confidence': result['confidence'],
+            'alerts': result['alerts'],
+        })
+
+    @action(detail=True, methods=['get'], url_path='alerts')
+    def alerts(self, request, pk=None):
+        """
+        چک هشدارهای SPI/CPI
+        """
+        from .services.stage_gate import should_alert
+
+        report = self.get_object()
+        result = should_alert(
+            spi=float(report.spi or 1.0),
+            cpi=float(report.cpi or 1.0),
+        )
+
+        return Response({
+            'report_id': report.id,
+            **result,
+        })
+
+class DevelopedOrNewAssetViewSet(viewsets.ModelViewSet):
+    queryset = DevelopedOrNewAsset.objects.all()
+    serializer_class = DevelopedOrNewAssetSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = DevelopedOrNewAsset.objects.all()
+        
+        if user.role == 'super_admin':
+            pass
+        elif user.role in ['org_admin', 'org_user']:
+            queryset = queryset.filter(project__organization=user.organization)
+        
+        project_id = self.request.query_params.get('project')
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        
+        is_new = self.request.query_params.get('is_new')
+        if is_new is not None:
+            queryset = queryset.filter(is_new=(is_new.lower() == 'true'))
+        
+        return queryset.select_related('project', 'source_asset', 'new_asset', 'created_by')
+    
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+    
+    @action(detail=True, methods=['post'])
+    def register_in_engine_1(self, request, pk=None):
+        """
+        ثبت واقعی در موتور ۱ (مسیر A)
+        
+        ساخت ScreenedAsset جدید با result='confirmed'
+        → خودکار تو /valuation/list ظاهر می‌شه
+        """
+        from intangible_assets.models import ScreenedAsset
+        from django.utils import timezone
+
+        developed = self.get_object()
+
+        # چک تکراری
+        if developed.registered_in_engine_1 and developed.new_asset:
+            return Response({
+                'error': 'این دارایی قبلاً در موتور ۱ ثبت شده',
+                'new_asset_id': developed.new_asset.id,
+            }, status=400)
+
+        source = developed.source_asset
+        project = developed.project
+
+        # fallback: اگه source_asset خالیه، از opportunity.asset بگیر
+        if not source and project.opportunity:
+            source = project.opportunity.asset
+            # ذخیره برای استفاده بعدی
+            if source:
+                developed.source_asset = source
+                developed.save(update_fields=['source_asset'])
+
+        # محاسبه asset_uid (فرمت IA-XXX-YY-000001)
+        from intangible_assets.asset_codes import generate_asset_uid
+
+        category = source.category if source else 'support_knowledge'
+        asset_name_for_uid = developed.asset_name or project.title
+
+        # شمارش دارایی‌های موجود با prefix مشابه
+        existing_count = ScreenedAsset.objects.filter(
+            asset_uid__startswith='IA-'
+        ).count()
+
+        asset_uid = generate_asset_uid(category, asset_name_for_uid, existing_count)
+
+        # ساخت ScreenedAsset با result='confirmed'
+        screened = ScreenedAsset.objects.create(
+            asset_name=asset_name_for_uid,
+            asset_uid=asset_uid,                # ← کد یکتا
+            description=(
+                f"دارایی توسعه‌یافته از پروژه «{project.title}»\n"
+                f"نوع: {'جدید' if developed.is_new else 'توسعه‌یافته'}\n"
+                f"نسخه: {developed.version}"
+            ),
+            version=developed.version,
+
+            # قالب از source_asset (کپی)
+            asset_type=source.asset_type if source else None,
+            category=category,
+            organization=project.organization or (source.organization if source else None),
+            department=source.department if source else None,
+
+            # مسیر A
+            result='confirmed',
+            is_approved_for_valuation=True,
+            approved_by=request.user,
+            approved_at=timezone.now(),
+
+            # متادیتا
+            created_by=request.user,
+            source_type='internal',
+        )
+
+        # لینک دو طرفه
+        developed.new_asset = screened
+        developed.registered_in_engine_1 = True
+        developed.save(update_fields=['new_asset', 'registered_in_engine_1', 'updated_at'])
+
+        return Response({
+            'success': True,
+            'message': f'دارایی «{screened.asset_name}» در موتور ۱ ثبت شد',
+            'new_asset': {
+                'id': screened.id,
+                'asset_name': screened.asset_name,
+                'asset_uid': screened.asset_uid,
+                'category': screened.category,
+                'result': screened.result,
+            },
+            'redirect_to_valuation': '/dashboard/intangible/valuation/list',
+        })
+    
+    @action(detail=True, methods=['post'])
+    def protect_in_engine_3(self, request, pk=None):
+        """حفاظت در موتور ۳"""
+        asset = self.get_object()
+        asset.protected_in_engine_3 = True
+        asset.save()
+        return Response({'message': 'حفاظت در موتور ۳ انجام شد', 'id': asset.id})
+    
+    @action(detail=True, methods=['post'])
+    def value_in_engine_2(self, request, pk=None):
+        """ارزش‌گذاری در موتور ۲"""
+        asset = self.get_object()
+        asset.valued_in_engine_2 = True
+        asset.save()
+        return Response({'message': 'ارزش‌گذاری در موتور ۲ انجام شد', 'id': asset.id})
+
+
+# ═══════════════════════════════════════════════════════════
+# گام ۵: ProjectClosureReport
+# ═══════════════════════════════════════════════════════════
+
+
+
+# ═══════════════════════════════════════════════════════════
+# 🆕 UnitBudgetViewSet — بودجه واحدها (org-admin)
+# ═══════════════════════════════════════════════════════════
+
+class UnitBudgetViewSet(viewsets.ModelViewSet):
+    """
+    مدیریت بودجه واحدها:
+    - org-admin: CRUD کامل (فقط واحدهای سازمان خودش)
+    - org_user: فقط خواندن (فقط بودجه واحد خودش)
+    - super_admin: همه
+    """
+    serializer_class = UnitBudgetSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = UnitBudget.objects.all()
+
+        if user.role == 'super_admin':
+            pass
+        elif user.role == 'org_admin':
+            queryset = queryset.filter(organization=user.organization)
+        elif user.role == 'org_user':
+            if user.department_id:
+                queryset = queryset.filter(department_id=user.department_id)
+            else:
+                queryset = queryset.none()
+        else:
+            queryset = queryset.none()
+
+        dept_id = self.request.query_params.get('department')
+        if dept_id:
+            queryset = queryset.filter(department_id=dept_id)
+
+        return queryset.select_related('organization', 'department', 'created_by')
+
+    def perform_create(self, serializer):
+        from rest_framework.exceptions import PermissionDenied
+        user = self.request.user
+
+        if user.role not in ['org_admin', 'super_admin']:
+            raise PermissionDenied('فقط مدیر سازمان می‌تواند بودجه تعریف کند')
+
+        serializer.save(organization=user.organization, created_by=user)
+
+    @action(detail=False, methods=['get'], url_path='my-unit')
+    def my_unit(self, request):
+        """بودجه واحد کاربر فعلی"""
+        user = request.user
+        if not user.department_id:
+            return Response({
+                'budget': None,
+                'message': 'کاربر به هیچ واحدی تخصیص داده نشده',
+            })
+
+        budget = self.get_queryset().filter(
+            department_id=user.department_id
+        ).order_by('-start_date').first()
+
+        if not budget:
+            return Response({
+                'budget': None,
+                'message': 'برای واحد شما بودجه‌ای تعریف نشده',
+            })
+
+        return Response({
+            'budget': self.get_serializer(budget).data,
+        })
+
+
+
+class ProjectClosureReportViewSet(viewsets.ModelViewSet):
+    queryset = ProjectClosureReport.objects.all()
+    serializer_class = ProjectClosureReportSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = ProjectClosureReport.objects.all()
+        
+        if user.role == 'super_admin':
+            pass
+        elif user.role in ['org_admin', 'org_user']:
+            queryset = queryset.filter(project__organization=user.organization)
+        
+        project_id = self.request.query_params.get('project')
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        
+        return queryset.select_related('project', 'created_by')
+    
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+    
+    @action(detail=True, methods=['post'])
+    def sign(self, request, pk=None):
+        """امضا گزارش اختتام"""
+        report = self.get_object()
+        
+        # اضافه کردن امضا
+        signoffs = report.signoffs or []
+        signoffs.append({
+            'user_id': request.user.id,
+            'name': f"{request.user.first_name} {request.user.last_name}".strip() or request.user.username,
+            'role': request.user.role,
+            'signed_at': timezone.now().isoformat(),
+        })
+        report.signoffs = signoffs
+        report.signoff_status = 'signed'
+        report.save()
+        
+        serializer = self.get_serializer(report)
+        return Response(serializer.data)

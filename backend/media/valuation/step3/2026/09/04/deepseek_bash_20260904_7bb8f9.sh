@@ -1,0 +1,1 @@
+journalctl -u tiimarket-backend.service -n 50 --no-pager
